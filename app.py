@@ -40,7 +40,28 @@ def infer_frequency(df, timestamp_col='timestamp'):
         if possible_cols:
             timestamp_col = possible_cols[0]
         else:
-            return None, None, None
+            # Fallback: Check for any column that looks like a datetime
+            found_col = None
+            for col in df.columns:
+                # Check if already datetime
+                if pd.api.types.is_datetime64_any_dtype(df[col]):
+                    found_col = col
+                    break
+                # Check if object/string and looks like a date (check first 20 non-null values)
+                if df[col].dtype == object or isinstance(df[col].dtype, pd.StringDtype):
+                    try:
+                        sample = df[col].dropna().head(20)
+                        if not sample.empty:
+                            pd.to_datetime(sample)
+                            found_col = col
+                            break
+                    except Exception:
+                        continue
+
+            if found_col:
+                timestamp_col = found_col
+            else:
+                return None, None, None
 
     # Parse datetime
     try:
@@ -84,6 +105,7 @@ with st.sidebar:
 
     with st.expander("📁 Data Source", expanded=True):
         uploaded_file = st.file_uploader("Upload Historical Load (CSV, Excel, Parquet)", type=["csv", "xlsx", "xls", "parquet"])
+        user_forecast_days = st.number_input("Forecast Horizon (Days)", min_value=1, max_value=365, value=7)
 
     # Placeholder variables for later updates
     freq_label = "Hourly"
@@ -149,36 +171,26 @@ if df is not None:
 
             # Adjust defaults based on frequency
             default_lookback = 24
-            default_horizon = 24
 
             if freq_label == "Daily":
                 default_lookback = 7 # 1 week
-                default_horizon = 7
             elif freq_label == "15-min":
                 default_lookback = 96 # 1 day
-                default_horizon = 96
 
             look_back = st.slider(f"Look-back Window ({freq_label} Steps)", 6, max(48, default_lookback*2), default_lookback)
 
-            st.write("Forecast Horizon")
-            horizon_mode = st.radio("Mode", ["Steps", "Time"], horizontal=True)
+            # Calculate horizon based on user input (Days) and time_delta
+            total_seconds_horizon = user_forecast_days * 24 * 3600
+            step_seconds = time_delta.total_seconds()
 
-            if horizon_mode == "Steps":
-                horizon = st.slider(f"Horizon ({freq_label} Steps)", 1, max(72, default_horizon*3), default_horizon)
-            else:
-                # Time mode
-                if freq_label == "Daily":
-                    days = st.number_input("Horizon (Days)", min_value=1, max_value=365, value=7)
-                    horizon = days
-                elif freq_label == "Hourly":
-                    days = st.number_input("Horizon (Days)", min_value=1, max_value=365, value=7)
-                    horizon = days * 24
-                elif freq_label == "15-min":
-                     hours = st.number_input("Horizon (Hours)", min_value=1, max_value=720, value=24)
-                     horizon = hours * 4
-                else:
-                    steps = st.number_input("Horizon (Steps)", min_value=1, max_value=1000, value=24)
-                    horizon = steps
+            # Ensure step_seconds is valid to avoid division by zero
+            if step_seconds <= 0:
+                step_seconds = 3600 # Default to 1 hour if something is wrong
+
+            horizon = int(total_seconds_horizon / step_seconds)
+
+            # Display the calculated horizon in steps
+            st.write(f"**Forecast Horizon:** {user_forecast_days} days ({horizon} steps)")
 
             if horizon > 1000: # Generic warning threshold
                 st.warning("⚠️ Accuracy may decrease for very long horizons.")
