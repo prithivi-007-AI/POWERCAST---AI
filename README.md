@@ -37,11 +37,58 @@ streamlit run app.py
 - `utils/`: Utility scripts (e.g., sample data generator).
 - `data/`: Folder for historical load datasets.
 
-## 🛠️ Usage
-1. **Upload Data**: Use the sidebar to upload a CSV file with `timestamp` and `load` columns.
-2. **Set Parameters**: Adjust the look-back window and forecast horizon.
-3. **Configure Generators**: Input generator capacities to see real-time unit recommendations.
-4. **Analyze**: View predictions and maintenance suggestions on the interactive dashboard.
+##📂 Dataset Requirements
+-Upload a CSV file containing the following mandatory columns:
+-timestamp → Date & time in a consistent format
+-load → Load demand values (e.g., MW)
+-For testing and reference, use the dataset provided in the GitHub repository:
+-File name: mock data(2).csv
+-Follow this file strictly for column names and formatting.
+
+##⚙️ Application Workflow
+1. Upload Data
+-Use the sidebar to upload the CSV file.
+-Ensure the dataset follows the same structure as mock data(2).csv.
+
+2. Set Parameters
+-Look-back Window:
+  -Number of past time steps used by the model to learn patterns.
+-Forecast Horizon:
+  -Number of future steps the model will predict.
+   
+3. Choose Forecast Horizon (Recommended Setting)
+-Select 36 steps (daily) as the forecast horizon for accurate and stable predictions.
+-This configuration balances short-term fluctuations and long-term trends effectively.
+
+4. Dataset Size for Accurate Prediction
+-To achieve reliable forecasting performance:
+  -Recommended historical data size = 5× to 10× the forecast horizon
+-For a 36-step daily forecast:
+  -Minimum required data: 180–360 days
+  -More data improves seasonal learning and reduces prediction error.
+
+5. Configure Generators
+-Input individual generator capacities in the sidebar.
+-The system provides:
+  -Real-time unit commitment recommendations
+  -Optimal generator usage based on predicted load
+
+6. Analyze & Monitor
+View results on the interactive dashboard, including:
+Load demand predictions
+Generator utilization insights
+Maintenance and efficiency suggestions
+
+##📊 Output Features
+-Time-series load forecasting
+-Generator-wise power allocation
+-Decision-support insights for operational planning
+
+##🧪 Testing & Validation
+-Use mock data(2).csv from the GitHub repository for:
+-Model testing
+-UI validation
+-Forecast verification
 
 ## 📄 License
 MIT License
