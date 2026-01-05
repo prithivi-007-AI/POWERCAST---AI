@@ -11,6 +11,71 @@ import os
 # Page Config
 st.set_page_config(page_title="Powercast-AI Dashboard", layout="wide", page_icon="⚡")
 
+def load_data(uploaded_file):
+    """
+    Loads data from various file formats (CSV, Excel, Parquet).
+    Returns a DataFrame.
+    """
+    filename = uploaded_file.name
+    if filename.endswith('.csv'):
+        df = pd.read_csv(uploaded_file)
+    elif filename.endswith(('.xls', '.xlsx')):
+        df = pd.read_excel(uploaded_file)
+    elif filename.endswith('.parquet'):
+        df = pd.read_parquet(uploaded_file)
+    else:
+        st.error("Unsupported file format.")
+        return None
+    return df
+
+def infer_frequency(df, timestamp_col='timestamp'):
+    """
+    Infers the frequency of the time series data.
+    Returns the frequency string (e.g., '1h', '15min') and the timedelta.
+    """
+    # Try to find the timestamp column if not provided or incorrect
+    if timestamp_col not in df.columns:
+        # Heuristic: look for columns with 'date', 'time', or 'ts' in the name
+        possible_cols = [c for c in df.columns if 'date' in c.lower() or 'time' in c.lower() or 'ts' in c.lower()]
+        if possible_cols:
+            timestamp_col = possible_cols[0]
+        else:
+            return None, None, None
+
+    # Parse datetime
+    try:
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col])
+    except Exception:
+        return None, None, None
+
+    df = df.sort_values(by=timestamp_col)
+
+    # Infer frequency
+    if len(df) > 1:
+        diffs = df[timestamp_col].diff().dropna()
+        # Get the mode of the time differences
+        if not diffs.empty:
+            common_diff = diffs.mode()[0]
+
+            # Determine a human readable label
+            seconds = common_diff.total_seconds()
+            if seconds == 3600:
+                freq_label = "Hourly"
+                freq_str = "1h"
+            elif seconds == 900:
+                freq_label = "15-min"
+                freq_str = "15min"
+            elif seconds == 86400:
+                freq_label = "Daily"
+                freq_str = "1d"
+            else:
+                freq_label = f"{int(seconds)}s"
+                freq_str = f"{int(seconds)}S"
+
+            return timestamp_col, common_diff, freq_label
+
+    return timestamp_col, timedelta(hours=1), "Hourly (Default)"
+
 # Sidebar - User Inputs
 with st.sidebar:
     st.title("⚡ Powercast-AI")
@@ -18,23 +83,16 @@ with st.sidebar:
     st.header("⚙️ Configuration")
 
     with st.expander("📁 Data Source", expanded=True):
-        uploaded_file = st.file_uploader("Upload Historical Load CSV", type=["csv"])
+        uploaded_file = st.file_uploader("Upload Historical Load (CSV, Excel, Parquet)", type=["csv", "xlsx", "xls", "parquet"])
 
-    with st.expander("🧠 Model Parameters", expanded=True):
-        look_back = st.slider("Look-back Window (Hours)", 6, 48, 24, help="Number of past hours to use for predicting the next hour.")
+    # Placeholder variables for later updates
+    freq_label = "Hourly"
+    time_delta = timedelta(hours=1)
 
-        st.write("Forecast Horizon")
-        horizon_mode = st.radio("Mode", ["Hours", "Days"], horizontal=True)
+    # We need to load data early to adjust sliders dynamically,
+    # but Streamlit runs top-to-bottom. We can handle defaults first.
 
-        if horizon_mode == "Hours":
-            horizon = st.slider("Horizon (Hours)", 1, 72, 24)
-        else:
-            days = st.number_input("Horizon (Days)", min_value=1, max_value=365, value=7)
-            horizon = days * 24
-
-        if horizon > 72:
-            st.warning("⚠️ Accuracy may decrease for long horizons (>72h) due to recursive error accumulation.")
-
+    # Default capacities
     with st.expander("🏭 Generator Capacities (MW)", expanded=False):
         unit1 = st.number_input("Unit 1", value=300)
         unit2 = st.number_input("Unit 2", value=250)
@@ -42,37 +100,107 @@ with st.sidebar:
         capacities = [unit1, unit2, unit3]
 
     st.markdown("---")
-    st.info("Powercast-AI v1.1\nProfessional Edition")
+    st.info("Powercast-AI v1.2\nProfessional Edition")
 
 # Initialize modules
 preprocessor = LoadPreprocessor()
-model = ForecastModel(look_back=look_back)
 decision_support = DecisionSupport(capacities)
 
 # Main Content
 st.title("⚡ Powercast-AI: Intelligent Load Management")
 st.markdown("### Advanced Load Forecasting & Decision Support System")
 
-if uploaded_file is not None or os.path.exists('data/historical_load.csv'):
-    # Load Data
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_csv('data/historical_load.csv')
+df = None
+if uploaded_file is not None:
+    df = load_data(uploaded_file)
+elif os.path.exists('data/historical_load.csv'):
+    df = pd.read_csv('data/historical_load.csv')
+
+if df is not None:
+    # Intelligent Analysis
+    ts_col, time_delta, freq_label = infer_frequency(df)
     
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    if ts_col is None:
+        st.error("Could not identify a timestamp column. Please ensure your data has a column with date/time information.")
+        st.stop()
+
+    df.rename(columns={ts_col: 'timestamp'}, inplace=True)
     
+    # Find load column (assume numerical and not timestamp)
+    load_col = None
+    for col in df.columns:
+        if col != 'timestamp' and pd.api.types.is_numeric_dtype(df[col]):
+            load_col = col
+            break
+
+    if load_col is None:
+        st.error("Could not identify a numerical load column.")
+        st.stop()
+
+    df.rename(columns={load_col: 'load'}, inplace=True)
+
+    # Sort just in case
+    df = df.sort_values('timestamp')
+
+    # Sidebar - Dynamic Model Parameters
+    with st.sidebar:
+        with st.expander("🧠 Model Parameters", expanded=True):
+            st.info(f"Detected Frequency: **{freq_label}**")
+
+            # Adjust defaults based on frequency
+            default_lookback = 24
+            default_horizon = 24
+
+            if freq_label == "Daily":
+                default_lookback = 7 # 1 week
+                default_horizon = 7
+            elif freq_label == "15-min":
+                default_lookback = 96 # 1 day
+                default_horizon = 96
+
+            look_back = st.slider(f"Look-back Window ({freq_label} Steps)", 6, max(48, default_lookback*2), default_lookback)
+
+            st.write("Forecast Horizon")
+            horizon_mode = st.radio("Mode", ["Steps", "Time"], horizontal=True)
+
+            if horizon_mode == "Steps":
+                horizon = st.slider(f"Horizon ({freq_label} Steps)", 1, max(72, default_horizon*3), default_horizon)
+            else:
+                # Time mode
+                if freq_label == "Daily":
+                    days = st.number_input("Horizon (Days)", min_value=1, max_value=365, value=7)
+                    horizon = days
+                elif freq_label == "Hourly":
+                    days = st.number_input("Horizon (Days)", min_value=1, max_value=365, value=7)
+                    horizon = days * 24
+                elif freq_label == "15-min":
+                     hours = st.number_input("Horizon (Hours)", min_value=1, max_value=720, value=24)
+                     horizon = hours * 4
+                else:
+                    steps = st.number_input("Horizon (Steps)", min_value=1, max_value=1000, value=24)
+                    horizon = steps
+
+            if horizon > 1000: # Generic warning threshold
+                st.warning("⚠️ Accuracy may decrease for very long horizons.")
+
+    # Initialize model with updated look_back
+    model = ForecastModel(look_back=look_back)
+
     # Preprocessing
     df['smoothed_load'] = preprocessor.smooth_data(df['load'].values)
     
     # KPIs at the top
     current_load = df['load'].iloc[-1]
-    avg_load_24h = df['load'].iloc[-24:].mean()
+    # Calculate avg based on ~24 hours worth of data if possible
+    steps_24h = int(timedelta(hours=24) / time_delta)
+    if steps_24h < 1: steps_24h = 1
+
+    avg_load_24h = df['load'].iloc[-steps_24h:].mean()
     peak_load_hist = df['load'].max()
 
     kpi1, kpi2, kpi3 = st.columns(3)
     kpi1.metric("Current Load", f"{current_load:.2f} MW", delta=f"{current_load - df['load'].iloc[-2]:.2f}")
-    kpi2.metric("24h Avg Load", f"{avg_load_24h:.2f} MW")
+    kpi2.metric(f"Avg Load (Last {steps_24h} steps)", f"{avg_load_24h:.2f} MW")
     kpi3.metric("Historical Peak", f"{peak_load_hist:.2f} MW")
 
     # Tabs
@@ -81,7 +209,7 @@ if uploaded_file is not None or os.path.exists('data/historical_load.csv'):
     with tab1:
         st.subheader("Historical Load Analysis")
         st.markdown("Comparison of raw historical load versus smoothed signal used for training.")
-        
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['load'], name="Actual Load", line=dict(color='gray', width=1, dash='dot')))
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['smoothed_load'], name="Smoothed Load", line=dict(color='#0068C9', width=2)))
@@ -89,7 +217,7 @@ if uploaded_file is not None or os.path.exists('data/historical_load.csv'):
         st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.subheader(f"Load Forecast ({horizon} hours)")
+        st.subheader(f"Load Forecast ({horizon} steps)")
 
         # Prepare Data for Training
         data_values = df['smoothed_load'].values.reshape(-1, 1)
@@ -103,19 +231,21 @@ if uploaded_file is not None or os.path.exists('data/historical_load.csv'):
         # Forecasting
         last_window = normalized_data[-look_back:]
 
-        with st.spinner(f"Generating forecast for {horizon} hours..."):
+        with st.spinner(f"Generating forecast for {horizon} steps..."):
             predictions_norm = model.multi_step_forecast(last_window, horizon)
             predictions = preprocessor.inverse_transform(predictions_norm.reshape(-1, 1)).flatten()
 
         # Future timestamps
         last_ts = df['timestamp'].iloc[-1]
-        future_ts = [last_ts + timedelta(hours=i+1) for i in range(horizon)]
+        future_ts = [last_ts + time_delta * (i+1) for i in range(horizon)]
 
         # Visualization
         fig_pred = go.Figure()
-        # Show last 7 days of history if available, else all
-        history_plot_points = min(len(df), 24*7)
-        fig_pred.add_trace(go.Scatter(x=df['timestamp'].iloc[-history_plot_points:], y=df['load'].iloc[-history_plot_points:], name="Historical (Last 7 Days)", line=dict(color='gray', width=1)))
+        # Show last ~7 days of history if available
+        steps_7days = int(timedelta(days=7) / time_delta)
+        history_plot_points = min(len(df), steps_7days)
+
+        fig_pred.add_trace(go.Scatter(x=df['timestamp'].iloc[-history_plot_points:], y=df['load'].iloc[-history_plot_points:], name="Historical", line=dict(color='gray', width=1)))
         fig_pred.add_trace(go.Scatter(x=future_ts, y=predictions, name="Forecast", line=dict(color='#FF4B4B', width=2)))
 
         fig_pred.update_layout(
@@ -176,7 +306,8 @@ if uploaded_file is not None or os.path.exists('data/historical_load.csv'):
             if maintenance_times:
                 current_window = [maintenance_times[0]]
                 for i in range(1, len(maintenance_times)):
-                    if maintenance_times[i] - maintenance_times[i-1] == timedelta(hours=1):
+                    # Check if consecutive based on time_delta
+                    if maintenance_times[i] - maintenance_times[i-1] == time_delta:
                         current_window.append(maintenance_times[i])
                     else:
                         windows.append(current_window)
@@ -185,7 +316,15 @@ if uploaded_file is not None or os.path.exists('data/historical_load.csv'):
 
             for win in windows:
                 if len(win) > 1:
-                    st.write(f"📅 **Window:** {win[0].strftime('%Y-%m-%d %H:%M')} to {win[-1].strftime('%Y-%m-%d %H:%M')} ({len(win)} hours)")
+                    duration_str = f"{len(win)} steps"
+                    # Try to give a time duration
+                    total_seconds = len(win) * time_delta.total_seconds()
+                    if total_seconds >= 3600:
+                        duration_str = f"{total_seconds/3600:.1f} hours"
+                    else:
+                        duration_str = f"{total_seconds/60:.1f} minutes"
+
+                    st.write(f"📅 **Window:** {win[0].strftime('%Y-%m-%d %H:%M')} to {win[-1].strftime('%Y-%m-%d %H:%M')} ({duration_str})")
                 else:
                     st.write(f"📅 **Slot:** {win[0].strftime('%Y-%m-%d %H:%M')}")
         else:
