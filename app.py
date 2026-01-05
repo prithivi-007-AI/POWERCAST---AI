@@ -85,6 +85,15 @@ with st.sidebar:
     with st.expander("📁 Data Source", expanded=True):
         uploaded_file = st.file_uploader("Upload Historical Load (CSV, Excel, Parquet)", type=["csv", "xlsx", "xls", "parquet"])
 
+        freq_option = st.selectbox(
+            "Data Frequency",
+            ["Auto-detect", "Hourly", "15-min", "Daily", "Custom (Seconds)"]
+        )
+
+        custom_seconds = 3600
+        if freq_option == "Custom (Seconds)":
+            custom_seconds = st.number_input("Seconds per Step", min_value=1, value=3600)
+
     # Placeholder variables for later updates
     freq_label = "Hourly"
     time_delta = timedelta(hours=1)
@@ -118,13 +127,31 @@ elif os.path.exists('data/historical_load.csv'):
 
 if df is not None:
     # Intelligent Analysis
-    ts_col, time_delta, freq_label = infer_frequency(df)
+    inferred_ts_col, inferred_time_delta, inferred_freq_label = infer_frequency(df)
     
-    if ts_col is None:
+    if inferred_ts_col is None:
         st.error("Could not identify a timestamp column. Please ensure your data has a column with date/time information.")
         st.stop()
 
-    df.rename(columns={ts_col: 'timestamp'}, inplace=True)
+    df.rename(columns={inferred_ts_col: 'timestamp'}, inplace=True)
+
+    # Apply Frequency Logic
+    if freq_option == "Auto-detect":
+        ts_col = inferred_ts_col
+        time_delta = inferred_time_delta
+        freq_label = inferred_freq_label
+    elif freq_option == "Hourly":
+        time_delta = timedelta(hours=1)
+        freq_label = "Hourly (Manual)"
+    elif freq_option == "15-min":
+        time_delta = timedelta(minutes=15)
+        freq_label = "15-min (Manual)"
+    elif freq_option == "Daily":
+        time_delta = timedelta(days=1)
+        freq_label = "Daily (Manual)"
+    elif freq_option == "Custom (Seconds)":
+        time_delta = timedelta(seconds=custom_seconds)
+        freq_label = f"{custom_seconds}s (Manual)"
     
     # Find load column (assume numerical and not timestamp)
     load_col = None
@@ -151,10 +178,10 @@ if df is not None:
             default_lookback = 24
             default_horizon = 24
 
-            if freq_label == "Daily":
+            if "Daily" in freq_label:
                 default_lookback = 7 # 1 week
                 default_horizon = 7
-            elif freq_label == "15-min":
+            elif "15-min" in freq_label:
                 default_lookback = 96 # 1 day
                 default_horizon = 96
 
@@ -167,13 +194,13 @@ if df is not None:
                 horizon = st.slider(f"Horizon ({freq_label} Steps)", 1, max(72, default_horizon*3), default_horizon)
             else:
                 # Time mode
-                if freq_label == "Daily":
+                if "Daily" in freq_label:
                     days = st.number_input("Horizon (Days)", min_value=1, max_value=365, value=7)
                     horizon = days
-                elif freq_label == "Hourly":
+                elif "Hourly" in freq_label:
                     days = st.number_input("Horizon (Days)", min_value=1, max_value=365, value=7)
                     horizon = days * 24
-                elif freq_label == "15-min":
+                elif "15-min" in freq_label:
                      hours = st.number_input("Horizon (Hours)", min_value=1, max_value=720, value=24)
                      horizon = hours * 4
                 else:
